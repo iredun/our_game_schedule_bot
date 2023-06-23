@@ -48,7 +48,10 @@ REPLY_MARKUP = InlineKeyboardMarkup(
 )
 
 
-def pretty_user_name(user: User) -> str:
+def pretty_user_name(user: User, custom_name: str = "") -> str:
+    if custom_name:
+        return f"[{custom_name}](tg://user?id={user.id})"
+
     user_full_name = " ".join(
         map(
             lambda s: s.strip() if s else "",
@@ -140,10 +143,12 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             ):
                 return
 
+        username = pretty_user_name(query.from_user, context.chat_data.get("custom_names", {}).get(user_id, ""))
+
         context.chat_data[message_id]["users"].append(
             {
                 "id": user_id,
-                "username": pretty_user_name(query.from_user),
+                "username": username,
                 "type": query.data,
                 "type_text": TYPE_TEXT_ADD.get(query.data, ""),
             }
@@ -230,6 +235,37 @@ async def list_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def mynameis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запомнить имя пользователя которое он введет после команды /mynameis"""
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
+        logging.warning(f"List not allowed try from - {update.effective_chat}")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Доступ запрещен!",
+        )
+        return
+
+    if "custom_names" not in context.chat_data:
+        context.chat_data["custom_names"] = {}
+
+    if context.args:
+        new_name = " ".join(context.args)
+        context.chat_data["custom_names"][update.effective_user.id] = new_name
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text=f"Теперь ты - {new_name}",
+        )
+    elif update.effective_user.id in context.chat_data["custom_names"]:
+        del context.chat_data["custom_names"][update.effective_user.id]
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text=f"Вернул твое настоящее имя!",
+        )
+
+
 if __name__ == "__main__":
     logging.info(f"Allowed chats: {ALLOWED_CHAT_IDS}")
 
@@ -244,5 +280,6 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("new", new_schedule))
     application.add_handler(CommandHandler("delete", delete_schedule))
     application.add_handler(CommandHandler("list", list_schedule))
+    application.add_handler(CommandHandler("mynameis", mynameis))
 
     application.run_polling()
