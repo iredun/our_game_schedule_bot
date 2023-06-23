@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timedelta
 
 from pytz import timezone
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, User
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -48,9 +48,24 @@ REPLY_MARKUP = InlineKeyboardMarkup(
 )
 
 
+def pretty_user_name(user: User) -> str:
+    user_full_name = " ".join(
+        map(
+            lambda s: s.strip() if s else "",
+            [user.first_name, user.last_name],
+        )
+    ).strip()
+
+    if not user_full_name:
+        user_full_name = "@" + user.username
+
+    return f"[{user_full_name}](tg://user?id={user.id})"
+
+
 def generate_message(game):
     users_numeric_list = [
-        f"{i}. {user['username']}{user['type_text']}" for i, user in enumerate(game["users"], 1)
+        f"{i}. {user['username']}{user['type_text']}"
+        for i, user in enumerate(game["users"], 1)
     ]
     users_text = "\n".join(users_numeric_list)
     return (
@@ -118,17 +133,17 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if query.data in TYPE_TEXT_ADD:
         for user in context.chat_data[message_id]["users"]:
-            if user["id"] == user_id and user["type"] in ["i", "not_sure"] and query.data in ["i", "not_sure"]:
+            if (
+                user["id"] == user_id
+                and user["type"] in ["i", "not_sure"]
+                and query.data in ["i", "not_sure"]
+            ):
                 return
 
-        user_nickname = (
-            f"@{query.from_user.username}"
-            or f"{query.from_user.first_name} {query.from_user.last_name}"
-        )
         context.chat_data[message_id]["users"].append(
             {
                 "id": user_id,
-                "username": user_nickname,
+                "username": pretty_user_name(query.from_user),
                 "type": query.data,
                 "type_text": TYPE_TEXT_ADD.get(query.data, ""),
             }
@@ -151,6 +166,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.edit_message_text(
             text=generate_message(context.chat_data[message_id]),
             reply_markup=REPLY_MARKUP,
+            parse_mode=ParseMode.MARKDOWN,
         )
 
 
@@ -200,7 +216,9 @@ async def list_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    now_date_without_time = datetime.now(tz=TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    now_date_without_time = datetime.now(tz=TZ).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     for message_id, game in context.chat_data.items():
         if now_date_without_time > game["date"]:
             del context.chat_data[message_id]
