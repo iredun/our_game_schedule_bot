@@ -225,6 +225,8 @@ async def list_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         hour=0, minute=0, second=0, microsecond=0
     )
     for message_id, game in context.chat_data.items():
+        if message_id == "custom_names":
+            continue
         if now_date_without_time > game["date"]:
             del context.chat_data[message_id]
             continue
