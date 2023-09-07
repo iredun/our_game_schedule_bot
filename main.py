@@ -85,7 +85,7 @@ def generate_message(game):
         f"{users_text}"
         f"\n------\n"
         f"Цена за час: `{price}₽`\n"
-        f"Продолжительность игры: `{hour} ч.`\n"
+        f"Продолжительность игры: `{hour}ч.`\n"
         f"Стоимость игры: `{total_price}₽`\n"
         f"С одного игрока: `{price_per_user}₽`"
     )
