@@ -1,5 +1,7 @@
 import logging
+import math
 import os
+from copy import deepcopy
 from datetime import datetime, timedelta
 
 from pytz import timezone
@@ -26,6 +28,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ALLOWED_CHAT_IDS = set(map(int, os.getenv("ALLOWED_CHAT_IDS", "").split(",")))
 PERSISTENCE = PicklePersistence(filepath="chats_data.dat", update_interval=10)
 TZ = timezone("Europe/Moscow")
+GAME_PRICE = 2500
+GAME_HOUR = 3
 
 TYPE_TEXT_ADD = {
     "i": "",
@@ -66,6 +70,10 @@ def pretty_user_name(user: User, custom_name: str = "") -> str:
 
 
 def generate_message(game):
+    price = game.get("price", GAME_PRICE)
+    hour = game.get("hour", GAME_HOUR)
+    total_price = price * hour
+    price_per_user = math.ceil(total_price / len(game["users"]))
     users_numeric_list = [
         f"{i}. {user['username']}{user['type_text']}"
         for i, user in enumerate(game["users"], 1)
@@ -75,6 +83,11 @@ def generate_message(game):
         f"{game['date_text']} {game['user_message']}\n"
         f"Список участников:\n"
         f"{users_text}"
+        f"\n------\n"
+        f"Цена за час: `{price}₽`\n"
+        f"Продолжительность игры: `{hour} ч.`\n"
+        f"Стоимость игры: `{total_price}₽`\n"
+        f"С одного игрока: `{price_per_user}₽`"
     )
 
 
@@ -102,9 +115,37 @@ async def new_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text="Неверный формат сообщения!\n"
             "Формат: /new ДАТА ТЕКСТ\n"
             "Пример: `/new 10 #игра` (Дата текущего месяца)\n"
-            "Пример: `/new 10.10.2023 #игра` (Конкретная дата)\n",
+            "Пример: `/new 10.10.2023 #игра` (Конкретная дата)\n"
+            "Если хотим установить цену (за час) или продолжительность игры, то пишем так:\n"
+            "`/new 10.10.2023 #игра ₽1000 ч.2`",
         )
         return
+
+    price = GAME_PRICE
+    hour = GAME_HOUR
+
+    logging.info(f"New game - {date_time} {context.args}")
+
+    for arg in context.args:
+        if arg.startswith("₽"):
+            try:
+                price = int(arg[1:])
+            except Exception as e:
+                price = GAME_PRICE
+
+            if price < 0:
+                price = GAME_PRICE
+
+        if arg.startswith("ч."):
+            try:
+                hour = int(arg[2:])
+            except Exception as e:
+                hour = GAME_HOUR
+
+            if hour < 0:
+                hour = GAME_HOUR
+
+    context.args = list(filter(lambda arg: not arg.startswith("₽") or not arg.startswith("ч."), context.args))
 
     user_message = " ".join(context.args)
 
@@ -122,6 +163,8 @@ async def new_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "user_message": user_message,
         "author": update.effective_user.id,
         "users": [],
+        "price": price,
+        "hour": hour,
     }
 
 
@@ -224,7 +267,7 @@ async def list_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now_date_without_time = datetime.now(tz=TZ).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
-    for message_id, game in context.chat_data.items():
+    for message_id, game in deepcopy(context.chat_data).items():
         if message_id == "custom_names":
             continue
         if now_date_without_time > game["date"]:
@@ -268,6 +311,129 @@ async def mynameis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def set_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установить время игры"""
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
+        logging.warning(f"List not allowed try from - {update.effective_chat}")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Доступ запрещен!",
+        )
+        return
+
+    if not context.args:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Не указано время игры!",
+        )
+        return
+
+    try:
+        hour = int(context.args[0])
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Неверный формат времени! Введите число.",
+        )
+        return
+
+    if hour <= 0:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Неверный формат времени! Введите число больше 0.",
+        )
+        return
+
+    message_id = update.message.reply_to_message.message_id
+    if message_id in context.chat_data:
+        if update.effective_user.id != context.chat_data[message_id]["author"]:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                reply_to_message_id=update.message.id,
+                text="Редактировать может только автор!",
+            )
+            return
+        context.chat_data[message_id]["hour"] = hour
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Время игры обновлено!",
+        )
+
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=message_id,
+            text=generate_message(context.chat_data[message_id]),
+            reply_markup=REPLY_MARKUP,
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установить цену игры"""
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
+        logging.warning(f"List not allowed try from - {update.effective_chat}")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Доступ запрещен!",
+        )
+        return
+
+    if not context.args:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Не указана цена игры!",
+        )
+        return
+
+    try:
+        price = int(context.args[0])
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Неверный формат цены! Введите число.",
+        )
+        return
+
+    if price <= 0:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Неверный формат цены! Введите число больше 0.",
+        )
+        return
+
+    message_id = update.message.reply_to_message.message_id
+    if message_id in context.chat_data:
+        if update.effective_user.id != context.chat_data[message_id]["author"]:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                reply_to_message_id=update.message.id,
+                text="Редактировать может только автор!",
+            )
+            return
+        context.chat_data[message_id]["price"] = price
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Цена игры обновлена!",
+        )
+
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=message_id,
+            text=generate_message(context.chat_data[message_id]),
+            reply_markup=REPLY_MARKUP,
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+
 if __name__ == "__main__":
     logging.info(f"Allowed chats: {ALLOWED_CHAT_IDS}")
 
@@ -283,5 +449,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("delete", delete_schedule))
     application.add_handler(CommandHandler("list", list_schedule))
     application.add_handler(CommandHandler("mynameis", mynameis))
+    application.add_handler(CommandHandler("price", set_price))
+    application.add_handler(CommandHandler("hour", set_hour))
 
     application.run_polling()
