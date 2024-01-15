@@ -30,6 +30,7 @@ PERSISTENCE = PicklePersistence(filepath="chats_data.dat", update_interval=10)
 TZ = timezone("Europe/Moscow")
 GAME_PRICE = 2500
 GAME_HOUR = 3
+MAX_PLAYERS_COUNT = 14
 
 TYPE_TEXT_ADD = {
     "i": "",
@@ -72,12 +73,23 @@ def pretty_user_name(user: User, custom_name: str = "") -> str:
 def generate_message(game):
     price = game.get("price", GAME_PRICE)
     hour = game.get("hour", GAME_HOUR)
+    max_players = game.get("max_players_count", MAX_PLAYERS_COUNT)
     total_price = price * hour
-    price_per_user = math.ceil(total_price / len(game["users"]))
-    users_numeric_list = [
-        f"{i}. {user['username']}{user['type_text']}"
-        for i, user in enumerate(game["users"], 1)
-    ]
+    total_users = len(game["users"])
+    try:
+        if total_users > max_players:
+            users_count = max_players
+        else:
+            users_count = total_users
+        price_per_user = math.ceil(total_price / users_count)
+    except Exception:
+        price_per_user = 0
+    users_numeric_list = []
+    for i, user in enumerate(game["users"], 1):
+        users_numeric_list.append(f"{i}. {user['username']}{user['type_text']}")
+        if i == max_players and total_users > max_players:
+            users_numeric_list.append("--- Запасной список ---")
+
     users_text = "\n".join(users_numeric_list)
     return (
         f"{game['date_text']} {game['user_message']}\n"
@@ -130,7 +142,7 @@ async def new_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if arg.startswith("₽"):
             try:
                 price = int(arg[1:])
-            except Exception as e:
+            except Exception:
                 price = GAME_PRICE
 
             if price < 0:
@@ -139,13 +151,18 @@ async def new_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if arg.startswith("ч."):
             try:
                 hour = int(arg[2:])
-            except Exception as e:
+            except Exception:
                 hour = GAME_HOUR
 
             if hour < 0:
                 hour = GAME_HOUR
 
-    context.args = list(filter(lambda arg: not arg.startswith("₽") or not arg.startswith("ч."), context.args))
+    context.args = list(
+        filter(
+            lambda arg: not arg.startswith("₽") or not arg.startswith("ч."),
+            context.args,
+        )
+    )
 
     user_message = " ".join(context.args)
 
@@ -165,6 +182,7 @@ async def new_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "users": [],
         "price": price,
         "hour": hour,
+        "max_players_count": MAX_PLAYERS_COUNT,
     }
 
 
@@ -178,25 +196,34 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if_change = False
 
     if query.data in TYPE_TEXT_ADD:
+        username = pretty_user_name(
+            query.from_user, context.chat_data.get("custom_names", {}).get(user_id, "")
+        )
+
         for user in context.chat_data[message_id]["users"]:
             if (
                 user["id"] == user_id
                 and user["type"] in ["i", "not_sure"]
                 and query.data in ["i", "not_sure"]
+                and user["type"] != query.data
             ):
+                user["type"] = query.data
+                user["type_text"] = TYPE_TEXT_ADD.get(query.data, "")
+                if_change = True
+                break
+            elif user["id"] == user_id and user["type"] == query.data and user["type"] == "i":
                 return
 
-        username = pretty_user_name(query.from_user, context.chat_data.get("custom_names", {}).get(user_id, ""))
-
-        context.chat_data[message_id]["users"].append(
-            {
-                "id": user_id,
-                "username": username,
-                "type": query.data,
-                "type_text": TYPE_TEXT_ADD.get(query.data, ""),
-            }
-        )
-        if_change = True
+        if not if_change:
+            context.chat_data[message_id]["users"].append(
+                {
+                    "id": user_id,
+                    "username": username,
+                    "type": query.data,
+                    "type_text": TYPE_TEXT_ADD.get(query.data, ""),
+                }
+            )
+            if_change = True
     elif query.data == "not_play":
         for user in context.chat_data[message_id]["users"]:
             if user["id"] == user_id and user["type"] in ["i", "not_sure"]:
@@ -372,6 +399,7 @@ async def set_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
         )
 
+
 async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Установить цену игры"""
     if update.effective_chat.id not in ALLOWED_CHAT_IDS:
@@ -434,6 +462,69 @@ async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def set_max_players_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установить максимальное количество игроков"""
+
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
+        logging.warning(f"List not allowed try from - {update.effective_chat}")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Доступ запрещен!",
+        )
+        return
+
+    if not context.args:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Не указана цена игры!",
+        )
+        return
+
+    try:
+        count = int(context.args[0])
+    except Exception:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Неверный формат кол-ва! Введите число.",
+        )
+        return
+
+    if count <= 0:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Неверный формат кол-ва! Введите число больше 0.",
+        )
+        return
+
+    message_id = update.message.reply_to_message.message_id
+    if message_id in context.chat_data:
+        if update.effective_user.id != context.chat_data[message_id]["author"]:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                reply_to_message_id=update.message.id,
+                text="Редактировать может только автор!",
+            )
+            return
+        context.chat_data[message_id]["max_players_count"] = count
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.id,
+            text="Кол-во игроков обновлено!",
+        )
+
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=message_id,
+            text=generate_message(context.chat_data[message_id]),
+            reply_markup=REPLY_MARKUP,
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+
 if __name__ == "__main__":
     logging.info(f"Allowed chats: {ALLOWED_CHAT_IDS}")
 
@@ -451,5 +542,6 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("mynameis", mynameis))
     application.add_handler(CommandHandler("price", set_price))
     application.add_handler(CommandHandler("hour", set_hour))
+    application.add_handler(CommandHandler("max_players_count", set_max_players_count))
 
     application.run_polling()
